@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 # Nama kamera bawaan di berbagai model Mac. Pencocokan dilakukan huruf kecil.
 BUILTIN_HINTS = (
@@ -95,12 +96,21 @@ def list_devices() -> list[CameraDevice]:
 def resolve(preferred: int | None = None) -> int:
     """Tentukan indeks kamera yang dipakai.
 
-    Kalau pemakai menyebut indeks sendiri, itu yang dipakai tanpa ditawar.
-    Kalau tidak, kamera bawaan didahulukan supaya iPhone yang sedang
-    terhubung tidak tiba-tiba terpakai.
+    Urutan prioritasnya: pilihan pemakai, lalu pilihan yang terakhir disimpan,
+    lalu kamera bawaan hasil deteksi nama, lalu indeks 0.
+
+    Deteksi nama hanya jadi cadangan, bukan sumber utama. Alasannya, urutan
+    perangkat yang dilaporkan ffmpeg tidak selalu sama dengan urutan yang
+    dipakai OpenCV saat membuka kamera, jadi nama yang terbaca bisa menunjuk
+    ke indeks yang salah. Karena itu aplikasi juga punya tombol untuk berganti
+    kamera langsung sambil melihat hasilnya.
     """
     if preferred is not None:
         return preferred
+
+    saved = load_preference()
+    if saved is not None:
+        return saved
 
     devices = list_devices()
     if not devices:
@@ -113,6 +123,35 @@ def resolve(preferred: int | None = None) -> int:
     if usable:
         return usable[0].index
     return 0
+
+
+def preference_path() -> Path:
+    return Path.home() / ".config" / "hand-portal" / "camera.txt"
+
+
+def load_preference() -> int | None:
+    """Indeks kamera yang terakhir dipilih pemakai, kalau ada."""
+    try:
+        text = preference_path().read_text().strip()
+    except OSError:
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def save_preference(index: int) -> None:
+    """Simpan pilihan kamera supaya tidak perlu diatur lagi tiap kali buka."""
+    path = preference_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{int(index)}\n")
+    except OSError:
+        # Gagal menyimpan bukan alasan menghentikan aplikasi; pilihan hanya
+        # tidak bertahan sampai sesi berikutnya.
+        pass
 
 
 def describe(index: int) -> str:

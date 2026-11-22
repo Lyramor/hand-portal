@@ -60,7 +60,7 @@ TOAST_FADE_S = 0.5
 # ditampilkan hanya jendela di sekitar filter aktif.
 MAX_CAROUSEL_ITEMS = 7
 
-HINT_TEXT = "Cubit lalu tarik untuk ketapel - Tahan jempol ke jari tengah untuk ganti efek - [ ] pilih - Q keluar"
+HINT_TEXT = "Cubit lalu tarik untuk ketapel - Tahan jempol ke jari tengah untuk ganti efek - [ ] pilih - C kamera - Q keluar"
 
 Segment = tuple[str, tuple[int, int, int]]
 

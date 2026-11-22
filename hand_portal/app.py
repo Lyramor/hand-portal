@@ -36,6 +36,10 @@ MASK_FILTERS = frozenset({"galaxy", "matrix"})
 # (frame gelap dianggap orang semua), jadi tidak dipakai.
 MAX_PERSON_COVERAGE = 0.95
 
+# Seberapa banyak indeks yang dicoba saat pemakai menekan tombol ganti kamera.
+# Delapan sudah lebih dari cukup untuk kamera bawaan, Continuity, dan layar.
+MAX_CAMERA_PROBE = 8
+
 SWITCH_REASON_TEXT = {
     "pinch": "Filter diganti (cubit)",
     "index": "Filter diganti (telunjuk bertemu)",
@@ -46,7 +50,7 @@ SWITCH_REASON_TEXT = {
 }
 
 HELP_LINES = (
-    "Q keluar   [ ] ganti filter   1-9 pilih cepat   A ganti otomatis",
+    "Q keluar   [ ] ganti filter   1-9 pilih cepat   A ganti otomatis   C kamera",
     "SPACE simpan foto   R rekam   H sembunyikan HUD",
     "P partikel   L kerangka tangan   F layar penuh   M cermin",
 )
@@ -87,25 +91,87 @@ class _FrameGrabber:
         self._thread.join(timeout=1.0)
 
 
-def open_camera(settings: Settings) -> cv2.VideoCapture:
+# Resolusi yang dicoba berurutan saat membuka kamera. Sebagian kamera
+# bawaan Mac memberi frame hitam pada resolusi tertinggi walaupun melaporkan
+# ukuran itu, jadi resolusi yang lebih kecil perlu dicoba sebelum menyerah.
+FALLBACK_RESOLUTIONS: tuple[tuple[int, int], ...] = (
+    (1280, 720),
+    (960, 540),
+    (640, 480),
+)
+
+# Jumlah frame yang dibaca untuk memastikan kamera benar-benar memberi gambar.
+WARMUP_FRAMES = 12
+MIN_MEAN_BRIGHTNESS = 12.0
+
+
+def _frame_is_usable(frame: np.ndarray | None) -> bool:
+    """True kalau frame berisi sesuatu, bukan hitam total."""
+    if frame is None or frame.size == 0:
+        return False
+    return float(np.mean(frame)) > MIN_MEAN_BRIGHTNESS
+
+
+def _try_open(index: int, width: int, height: int) -> tuple[cv2.VideoCapture | None, tuple[int, int]]:
+    """Buka kamera pada satu resolusi dan pastikan gambarnya tidak hitam."""
     backend = getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY)
-    capture = cv2.VideoCapture(settings.camera_index, backend)
+    capture = cv2.VideoCapture(index, backend)
     if not capture.isOpened():
-        # Sebagian mesin Linux tidak punya backend AVFoundation, jadi coba
-        # deteksi otomatis sebelum menyerah.
-        capture = cv2.VideoCapture(settings.camera_index)
-    if not capture.isOpened():
-        name = cameras.describe(settings.camera_index)
-        raise RuntimeError(
-            f"Kamera {settings.camera_index} ({name}) tidak bisa dibuka. "
-            "Pastikan tidak ada aplikasi lain yang memakai kamera, dan izin "
-            "kamera sudah diberikan. Coba `python main.py --list-cameras` "
-            "untuk melihat kamera yang tersedia."
-        )
-    capture.set(cv2.CAP_PROP_FRAME_WIDTH, settings.width)
-    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, settings.height)
+        capture.release()
+        return None, (0, 0)
+
+    capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    return capture
+
+    # Kamera butuh beberapa frame untuk menyesuaikan exposure. Yang dinilai
+    # adalah frame terakhir, bukan frame pertama.
+    last = None
+    for _ in range(WARMUP_FRAMES):
+        ok, frame = capture.read()
+        if ok and frame is not None:
+            last = frame
+    if not _frame_is_usable(last):
+        capture.release()
+        return None, (0, 0)
+
+    assert last is not None
+    return capture, (last.shape[1], last.shape[0])
+
+
+def open_camera(settings: Settings) -> cv2.VideoCapture:
+    """Buka kamera dan pastikan ia benar-benar memberi gambar.
+
+    Resolusi yang diminta dicoba lebih dulu. Kalau hasilnya hitam, resolusi
+    lain dicoba. Ini penting karena kamera bawaan sebagian Mac mengembalikan
+    frame hitam pada 1080p tetapi normal pada 720p, dan tanpa pemeriksaan ini
+    aplikasi akan tampak "tidak jalan" padahal kameranya sehat.
+    """
+    wanted = (settings.width, settings.height)
+    attempts: list[tuple[int, int]] = [wanted]
+    for resolution in FALLBACK_RESOLUTIONS:
+        if resolution not in attempts:
+            attempts.append(resolution)
+
+    for width, height in attempts:
+        capture, actual = _try_open(settings.camera_index, width, height)
+        if capture is not None:
+            if (width, height) != wanted:
+                print(
+                    f"Kamera {settings.camera_index} hanya memberi gambar pada "
+                    f"{actual[0]}x{actual[1]}, bukan {wanted[0]}x{wanted[1]}. "
+                    "Resolusi itu yang dipakai.",
+                    flush=True,
+                )
+            return capture
+
+    raise RuntimeError(
+        f"Kamera {settings.camera_index} ({cameras.describe(settings.camera_index)}) "
+        "tidak bisa dibuka atau hanya memberi gambar hitam. Kemungkinan "
+        "penyebab: kamera sedang dipakai aplikasi lain (QuickTime, Photo Booth, "
+        "panggilan video), lensa tertutup, atau izin kamera belum diberikan. "
+        "Di dalam aplikasi, tekan C untuk mencoba kamera berikutnya."
+    )
 
 
 LOCK_PATH = Path("/tmp/hand-portal.lock")
@@ -222,13 +288,13 @@ class App:
         name = cameras.describe(self.settings.camera_index)
         print(
             f"Kamera {self.settings.camera_index}: {name}. "
-            "Tekan Q di jendela kamera untuk keluar.",
+            "Tekan C untuk ganti kamera, Q untuk keluar.",
             flush=True,
         )
         # Nama kamera ditampilkan sekilas di layar, jadi kalau ternyata yang
         # terpakai bukan kamera yang dimaksud, itu langsung kelihatan tanpa
         # harus membuka log.
-        self._pending_toast = f"Kamera: {name}"
+        self._pending_toast = f"Kamera {self.settings.camera_index}: {name}"
         try:
             while True:
                 if not self._step():
@@ -420,6 +486,8 @@ class App:
             )
         elif key == ord("f"):
             self._toggle_fullscreen()
+        elif key == ord("c"):
+            self._switch_camera(now_s)
         elif key == ord("?"):
             for line in HELP_LINES:
                 print(line)
@@ -435,6 +503,52 @@ class App:
         self.recorder = Recorder(path, self.settings.width, self.settings.height, self.settings.fps_target)
         self.recording = True
         self.hud.toast(f"Merekam ke {path}", now_s)
+
+    def _switch_camera(self, now_s: float) -> None:
+        """Pindah ke kamera berikutnya tanpa menutup aplikasi.
+
+        Ini cara paling andal memilih kamera di macOS: pemakai melihat
+        langsung gambarnya, jadi tidak perlu menebak dari nama atau urutan
+        indeks yang bisa berubah. Pilihan terakhir disimpan untuk sesi
+        berikutnya.
+        """
+        start = self.settings.camera_index
+        for step in range(1, MAX_CAMERA_PROBE + 1):
+            candidate = (start + step) % MAX_CAMERA_PROBE
+            capture, actual = _try_open(candidate, self.settings.width, self.settings.height)
+            if capture is None:
+                # Resolusi yang diminta gagal, coba yang lebih kecil sebelum
+                # menyimpulkan kamera ini tidak bisa dipakai.
+                for width, height in FALLBACK_RESOLUTIONS:
+                    capture, actual = _try_open(candidate, width, height)
+                    if capture is not None:
+                        break
+            if capture is None:
+                continue
+
+            # Kamera lama dilepas dulu supaya kamera yang baru benar-benar
+            # bisa dipakai, karena satu kamera hanya bisa dibuka satu proses.
+            if self.grabber is not None:
+                self.grabber.stop()
+            if self.capture is not None:
+                self.capture.release()
+
+            self.capture = capture
+            self.grabber = _FrameGrabber(capture)
+            self.settings = self.settings.with_overrides(camera_index=candidate)
+            self.portal_tracker.reset()
+            self.slingshot.reset()
+            self.projectiles.clear()
+            cameras.save_preference(candidate)
+            label = cameras.describe(candidate)
+            self.hud.toast(f"Kamera {candidate}: {label} ({actual[0]}x{actual[1]})", now_s)
+            print(
+                f"Pindah ke kamera {candidate}: {label} pada {actual[0]}x{actual[1]}",
+                flush=True,
+            )
+            return
+
+        self.hud.toast("Tidak ada kamera lain yang bisa dibuka", now_s)
 
     def _toggle_fullscreen(self) -> None:
         try:
