@@ -216,9 +216,16 @@ def main() -> int:
     sling_step((0.42, 0.54), 0.11)
     check("peluru meluncur setelah dilepas", len(app.projectiles._items) >= 1)  # noqa: SLF001
 
-    for _ in range(45):
+    # Peluru sekarang jauh lebih cepat, jadi pecahannya muncul dalam beberapa
+    # frame, bukan puluhan. Jendela ujinya disesuaikan supaya tidak melewatkan
+    # momen pecahnya.
+    burst_seen = False
+    for _ in range(20):
         sling_step((0.42, 0.54), 0.11)
-    check("peluru pecah setelah sampai", len(app.projectiles._bursts) >= 1)  # noqa: SLF001
+        if app.projectiles._bursts:  # noqa: SLF001
+            burst_seen = True
+            break
+    check("peluru pecah setelah sampai", burst_seen)
     cv2.imwrite(str(OUT / "app-ketapel.png"), shown[-1])
 
     # -- ganti filter otomatis --

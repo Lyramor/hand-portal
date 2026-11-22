@@ -46,8 +46,15 @@ BAND_WIDTH_PX = 3.0
 ORB_RADIUS_PX = 9.0
 CHARGE_RING_RADIUS_PX = 22.0
 TRAIL_LENGTH = 9
-GRAVITY_RATIO = 0.55
-PROJECTILE_LIFE_S = 1.6
+# Peluru dibiarkan lebih cepat daripada jatuh gravitasi, jadi lintasannya
+# lurus dan cepat seperti tembakan, bukan melengkung seperti lemparan.
+GRAVITY_RATIO = 0.18
+PROJECTILE_LIFE_S = 1.1
+
+# Kecepatan peluru relatif terhadap sisi pendek frame per detik. Angka ini
+# yang paling menentukan terasa cepat atau tidak.
+SPEED_BASE_RATIO = 2.4
+SPEED_POWER_RATIO = 3.2
 
 REFERENCE_HEIGHT = 720.0
 
@@ -246,7 +253,7 @@ class Projectiles:
 
     def fire(self, shot: Shot, width: int, height: int) -> None:
         scale = float(min(width, height))
-        speed = (0.75 + 1.5 * shot.power) * scale
+        speed = (SPEED_BASE_RATIO + SPEED_POWER_RATIO * shot.power) * scale
         velocity = (shot.direction[0] * speed, shot.direction[1] * speed)
         self._items.append(
             Projectile(
@@ -351,8 +358,14 @@ def draw_slingshot(
     projectiles: Projectiles,
     theme: Theme,
     now_s: float,
+    bands: bool = False,
 ) -> None:
-    """Gambar ketapel yang sedang ditarik dan semua peluru di udara."""
+    """Gambar ketapel yang sedang ditarik dan semua peluru di udara.
+
+    `bands` mengatur garis karetnya. Bawaannya mati: bola yang sedang ditarik
+    dan pelurunya sudah cukup menjelaskan gestur, dan tanpa garis layarnya
+    terasa lebih bersih.
+    """
     height = frame.shape[0]
     scale = _scale_for(height)
 
@@ -360,7 +373,8 @@ def draw_slingshot(
         pull = (int(round(state.pull[0])), int(round(state.pull[1])))
         anchor = (int(round(state.anchor[0])), int(round(state.anchor[1])))
 
-        _draw_band(frame, anchor, state.pull, scale, theme.accent_soft)
+        if bands:
+            _draw_band(frame, anchor, state.pull, scale, theme.accent_soft)
 
         # Bola yang sedang ditarik membesar mengikuti kekuatan, jadi pemakai
         # bisa melihat kapan tarikannya sudah penuh.

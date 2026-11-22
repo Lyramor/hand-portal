@@ -21,6 +21,7 @@ THUMB_TIP = 4
 INDEX_MCP = 5
 INDEX_TIP = 8
 MIDDLE_MCP = 9
+MIDDLE_TIP = 12
 PINKY_TIP = 20
 
 Point = tuple[float, float]
@@ -56,6 +57,10 @@ class Hand:
     @property
     def pinky_tip(self) -> Landmark:
         return self.landmarks[PINKY_TIP]
+
+    @property
+    def middle_tip(self) -> Landmark:
+        return self.landmarks[MIDDLE_TIP]
 
     def span(self) -> float:
         """Lebar telapak dalam satuan ternormalisasi.

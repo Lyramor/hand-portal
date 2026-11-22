@@ -226,16 +226,27 @@ MIRROR_GRAIN = 5
 
 # --- halftone -------------------------------------------------------------
 
-# Jarak antar titik cetak, relatif terhadap sisi pendek roi.
-HALFTONE_CELL_RATIO = 1.0 / 42.0
+# Jarak antar titik cetak, relatif terhadap akar luas roi. Dasar akar luas
+# dipilih, bukan sisi pendek: portal persegi dan portal lebar-pendek jadi
+# punya kepadatan titik yang terasa sama, padahal sisi pendeknya beda jauh.
+HALFTONE_CELL_RATIO = 1.0 / 28.0
 HALFTONE_ANGLE = math.radians(45.0)
-HALFTONE_MAX_RADIUS = 0.56
+HALFTONE_MAX_RADIUS = 0.66
 HALFTONE_PAPER = (198, 228, 244)  # BGR kertas
 HALFTONE_INK = (26, 22, 20)  # BGR tinta
 # Nada ditekan sebelum dipetakan jadi radius. Tanpa ini, hampir semua
 # wilayah jatuh di radius yang sama dan hasilnya terbaca seperti kain,
 # bukan seperti cetakan koran yang punya beda gelap-terang jelas.
 HALFTONE_TONE_GAMMA = 1.0
+# Nada dihaluskan sebesar sebagian sel. Kalau terlalu tajam, ukuran titik
+# melompat dari sel ke sel dan hasilnya terlihat seperti noise, bukan cetak.
+HALFTONE_TONE_BLUR = 0.32
+# Lebar tepi titik dalam piksel pola. Tanpa ini tiap titik bergerigi tangga,
+# karena piksel hanya boleh masuk atau tidak masuk sama sekali.
+HALFTONE_EDGE_SOFTNESS = 2.2
+# Petak pola dihitung beberapa kali lebih besar lalu dikecilkan. Tanpa ini
+# titiknya ikut bentuk grid piksel, jadi terlihat kotak, bukan bulat.
+HALFTONE_SUPERSAMPLE = 4
 # Rentang nada direntangkan dulu ke 5..95 persentil. Tanpa perentangan,
 # satu potongan wajah yang gelap rata berubah jadi satu bidang titik
 # seukuran sama, dan gambarnya hilang sama sekali.
@@ -1100,21 +1111,29 @@ def _halftone_period(shape: tuple[int, int]) -> int:
     jahitan, dan medan jarak tidak perlu dihitung seukuran roi.
     """
     height, width = shape
-    return max(6, int(round(min(height, width) * HALFTONE_CELL_RATIO * math.sqrt(2.0))))
+    side = math.sqrt(max(1.0, float(height) * float(width)))
+    return max(6, int(round(side * HALFTONE_CELL_RATIO)))
 
 
 @lru_cache(maxsize=16)
 def _halftone_tile(period: int) -> np.ndarray:
-    """Medan jarak ke pusat titik dalam satu petak yang bisa diulang."""
-    yy, xx = np.mgrid[0:period, 0:period].astype(np.float32)
-    # cos(45) = sin(45) = 1/akar(2), jadi (x + y) / period sudah berupa
+    """Medan jarak ke pusat titik dalam satu petak yang bisa diulang.
+
+    Dihitung pada petak yang beberapa kali lebih besar lalu dikecilkan,
+    supaya tepi titik membulat. Pada ukuran asli, jarak hanya berubah satu
+    langkah per piksel dan hasilnya selalu berbentuk kotak.
+    """
+    n = period * HALFTONE_SUPERSAMPLE
+    yy, xx = np.mgrid[0:n, 0:n].astype(np.float32)
+    # cos(45) = sin(45) = 1/akar(2), jadi (x + y) / n sudah berupa
     # koordinat ternormalisasi tanpa perkalian matriks.
-    u = (xx + yy) / period
-    v = (-xx + yy) / period
+    u = (xx + yy) / n
+    v = (-xx + yy) / n
     du = u - np.round(u)
     dv = v - np.round(v)
     distance = np.sqrt(du * du + dv * dv) / 0.7071
-    return np.clip(distance * 255.0, 0.0, 255.0).astype(np.uint8)
+    field = np.clip(distance * 255.0, 0.0, 255.0).astype(np.uint8)
+    return cv2.resize(field, (period, period), interpolation=cv2.INTER_AREA)
 
 
 @lru_cache(maxsize=4)
@@ -1128,6 +1147,19 @@ def _halftone_radius_lut() -> np.ndarray:
     return np.clip(radius * 255.0, 0.0, 255.0).astype(np.uint8)
 
 
+@lru_cache(maxsize=16)
+def _halftone_cover_lut(period: int) -> np.ndarray:
+    """Selisih radius dan medan jarak menjadi tutupan tinta 0..255.
+
+    Satu piksel pola mewakili 360/period derajat, jadi lebar tepi yang
+    diinginkan diterjemahkan ke kemiringan kurva. Hasilnya tepi titik
+    berubah bertahap, dan itulah yang membuat titiknya terbaca bulat.
+    """
+    slope = 255.0 / (360.0 / period * HALFTONE_EDGE_SOFTNESS)
+    steps = np.arange(256, dtype=np.float32) - 128.0
+    return np.clip(steps * slope + 128.0, 0.0, 255.0).astype(np.uint8)
+
+
 def _filter_halftone(roi: np.ndarray, ctx: FilterContext) -> np.ndarray:
     """Titik-titik cetak koran: gelap jadi titik besar, terang jadi titik kecil."""
     if _too_small(roi):
@@ -1138,19 +1170,39 @@ def _filter_halftone(roi: np.ndarray, ctx: FilterContext) -> np.ndarray:
     field = np.tile(tile, (height // period + 1, width // period + 1))[:height, :width]
 
     gray = _luma(roi)
-    # Nada dihaluskan seukuran sel supaya ukuran titik berubah mulus, lalu
-    # direntangkan ke rentang penuh dan dipetakan lewat LUT.
-    tone = cv2.GaussianBlur(gray, (0, 0), max(1.0, period * 0.5))
+    # Nada cuma dipakai untuk memilih ukuran titik, jadi tidak perlu setajam
+    # piksel asli. Untuk sel besar, blur dan perentangan dihitung di
+    # seperempat ukuran: di resolusi penuh keduanya jadi biaya terbesar
+    # filter ini, padahal setelah dinaikkan lagi hasilnya sama saja.
+    sigma = max(1.0, period * HALFTONE_TONE_BLUR)
+    factor = 4 if sigma >= 6.0 else 1
+    if factor > 1:
+        tone = cv2.resize(
+            gray,
+            (max(1, width // factor), max(1, height // factor)),
+            interpolation=cv2.INTER_AREA,
+        )
+        tone = cv2.GaussianBlur(tone, (0, 0), sigma / factor)
+    else:
+        tone = cv2.GaussianBlur(gray, (0, 0), sigma)
     low, high = np.percentile(tone, (HALFTONE_STRETCH_LOW, HALFTONE_STRETCH_HIGH))
     span = max(float(high) - float(low), 1.0)
     stretched = np.clip((tone.astype(np.float32) - low) * (255.0 / span), 0.0, 255.0)
     radius = cv2.LUT(stretched.astype(np.uint8), _halftone_radius_lut())
-    dots = cv2.compare(field, radius, cv2.CMP_LE)
+    if factor > 1:
+        radius = cv2.resize(radius, (width, height), interpolation=cv2.INTER_LINEAR)
 
-    out = np.empty((height, width, 3), np.uint8)
-    out[:] = np.array(HALFTONE_PAPER, np.uint8)
-    ink = np.tile(np.array([[[*HALFTONE_INK]]], np.uint8), (height, width, 1))
-    cv2.copyTo(ink, dots, out)
+    # radius - field + 128 dalam satu operasi: positif berarti piksel ada
+    # di dalam titik. Nilainya dipakai sebagai tutupan, bukan sebagai
+    # keputusan dua nilai, supaya tepinya bisa lunak.
+    signed = cv2.addWeighted(radius, 1.0, field, -1.0, 128.0)
+    cover = cv2.LUT(signed, _halftone_cover_lut(period))
+
+    paper = np.empty((height, width, 3), np.uint8)
+    paper[:] = np.array(HALFTONE_PAPER, np.uint8)
+    ink = np.empty((height, width, 3), np.uint8)
+    ink[:] = np.array(HALFTONE_INK, np.uint8)
+    out = _blend_masked(ink, paper, cover)
     return _polish(out, roi, HALFTONE_VIGNETTE, HALFTONE_GRAIN, _roi_origin(ctx))
 
 
@@ -1555,8 +1607,7 @@ def _filter_matrix(roi: np.ndarray, ctx: FilterContext) -> np.ndarray:
 
 COMIC_LEVELS = 6
 COMIC_SATURATION = 1.35
-COMIC_EDGE_BLOCK = 9
-COMIC_EDGE_C = 6
+COMIC_EDGE_C = 14
 # Blur sebelum kuantisasi. Bidang warna komik harus rata; tanpa ini,
 # gradasi pelan yang ber-noise terpecah jadi bercak coklat dan hasilnya
 # terbaca seperti cetakan rusak, bukan seperti panel komik.
@@ -1567,6 +1618,15 @@ WATERCOLOR_SIGMA_COLOR = 42
 WATERCOLOR_SIGMA_SPACE = 12
 WATERCOLOR_MEDIAN = 5
 WATERCOLOR_EDGE_MIX = 0.22
+# Butir kertas dan pengumpulan pigmen. Tanpa dua ini, cat air hanya terlihat
+# seperti foto yang diburamkan, karena semua orang mengenali cat air dari
+# tekstur kertasnya dan dari tepi yang lebih gelap saat cat mengering.
+WATERCOLOR_PAPER = 10
+WATERCOLOR_POOL = 0.42
+WATERCOLOR_POOL_SIGMA = 3.5
+# Jumlah lapis warna. Cat air asli tidak punya gradasi mulus di satu
+# bidang; ia punya beberapa lapis cat yang bertumpuk.
+WATERCOLOR_LAYERS = 7
 
 NIGHTVISION_GAMMA = 0.62
 NIGHTVISION_GREEN = (70, 255, 90)
@@ -1611,6 +1671,16 @@ LOMO_VIGNETTE = 0.72
 
 INFRARED_TINT = (170, 150, 255)
 INFRARED_CONTRAST = 1.22
+# Pengangkat nada. Foto infra merah asli selalu terang dan berkontras
+# tinggi: dedaunan dan kulit memantulkan banyak inframerah sehingga hampir
+# putih, sementara langit dan bayangan jadi sangat gelap. Tanpa pengangkat
+# ini penukaran kanal saja menghasilkan gambar yang kusam dan gelap.
+INFRARED_LIFT = 1.34
+INFRARED_BRIGHT = 26
+# Sorotan diberi warna merah muda. Ini yang membuat fotonya langsung
+# dikenali sebagai infra merah, bukan sebagai foto yang warnanya tertukar.
+INFRARED_HIGHLIGHT = (206, 186, 255)  # BGR merah muda
+INFRARED_HIGHLIGHT_MIX = 0.52
 
 CONFETTI_COUNT = 90
 CONFETTI_RADIUS_PX = 5
@@ -1630,18 +1700,20 @@ def _filter_comic(roi: np.ndarray, ctx: FilterContext) -> np.ndarray:
     step = max(1, 256 // COMIC_LEVELS)
     quantized = (colorful // step) * step + step // 2
 
-    # Ambang adaptif diambil dari bidang yang sudah dihaluskan dan
-    # dikuantisasi. Diambil dari gambar asli, gradasi pelan yang ber-noise
-    # membuat ambang lokalnya bolak-balik dan hasilnya bercak tinta.
+    # Garis tinta diambil dari batas bidang warna hasil kuantisasi, bukan
+    # dari ambang adaptif pada gambar asli. Ambang adaptif mengikuti gradasi
+    # dan noise, jadi garisnya pecah-pecah; batas bidang selalu berupa garis
+    # yang menyambung, dan itu yang terbaca sebagai tinta komik.
     gray = cv2.cvtColor(quantized, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (0, 0), COMIC_PREBLUR)
-    block = _odd(max(3, min(COMIC_EDGE_BLOCK, min(height, width) // 3 or 3)))
-    ink = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, block, COMIC_EDGE_C
-    )
-    # Sisa bintik yang lolos disaring lewat bukaan: satu-dua piksel terpisah
-    # bukan bidang bayangan komik, dan kalau dibiarkan terlihat seperti noda.
+    # Diburamkan sedikit dulu: pada bentuk melengkung, dua tingkat warna yang
+    # berdekatan menghasilkan dua kontur sejajar, dan hasilnya terlihat
+    # seperti garis ganda. Blur kecil menyatukan keduanya jadi satu garis.
+    gray = cv2.GaussianBlur(gray, (0, 0), 1.8)
+    gradient = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8))
+    ink = cv2.threshold(gradient, COMIC_EDGE_C, 255, cv2.THRESH_BINARY_INV)[1]
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    # Ditebalkan sedikit: garis komik selalu lebih tebal dari batas warnanya.
+    ink = cv2.dilate(ink, np.ones((2, 2), np.uint8))
     ink_ratio = cv2.cvtColor(ink, cv2.COLOR_GRAY2BGR).astype(np.float32) / 255.0
     out = (quantized.astype(np.float32) * ink_ratio).astype(np.uint8)
     return _polish(out, roi, vignette=0.30, grain=0.0)
@@ -1665,7 +1737,16 @@ def _filter_watercolor(roi: np.ndarray, ctx: FilterContext) -> np.ndarray:
         small, 7, WATERCOLOR_SIGMA_COLOR, WATERCOLOR_SIGMA_SPACE
     )
     smooth = cv2.medianBlur(smooth, min(WATERCOLOR_MEDIAN, max(3, min(smooth.shape[:2]) // 2 * 2 + 1)))
+    # Warna dipadatkan jadi beberapa lapis dulu, baru diperbesar. Satu
+    # bidang cat air memang satu warna rata, bukan gradasi; tanpa langkah
+    # ini hasilnya hanya foto yang diburamkan. Diburamkan lagi sebelum
+    # dipotong, karena sisa noise di gambar kecil berubah jadi bercak warna
+    # setelah diperbesar.
+    smooth = cv2.GaussianBlur(smooth, (0, 0), 1.6)
+    step = max(1, 256 // WATERCOLOR_LAYERS)
+    smooth = (smooth // step) * step + step // 2
     washed = cv2.resize(smooth, (width, height), interpolation=cv2.INTER_CUBIC)
+    washed = cv2.medianBlur(washed, 5)
 
     edges = cv2.Canny(cv2.GaussianBlur(_luma(roi), (5, 5), 0), 40, 110)
     edge_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
@@ -1673,6 +1754,16 @@ def _filter_watercolor(roi: np.ndarray, ctx: FilterContext) -> np.ndarray:
     # bukan cat air.
     out = cv2.addWeighted(washed, 1.0, edge_bgr, -WATERCOLOR_EDGE_MIX, 0.0)
     out = _saturate(out, 1.18)
+
+    # Pengumpulan pigmen: tepi tiap bidang cat sedikit lebih pekat, persis
+    # seperti cat yang menumpuk saat airnya mengering.
+    pool = cv2.GaussianBlur(edges, (0, 0), WATERCOLOR_POOL_SIGMA)
+    out = cv2.subtract(out, cv2.convertScaleAbs(_tint(pool, (90, 70, 60)), alpha=WATERCOLOR_POOL))
+
+    # Tekstur kertas, dipatok ke koordinat frame supaya tidak ikut bergerak
+    # saat portal bergerak.
+    paper = _grain_layer((height, width), WATERCOLOR_PAPER, _roi_origin(ctx))
+    out = cv2.addWeighted(out, 1.0, paper, 0.55, -128.0 * 0.55)
     return _polish(out, roi, vignette=0.22, grain=0.0)
 
 
@@ -1845,8 +1936,16 @@ def _filter_infrared(roi: np.ndarray, ctx: FilterContext) -> np.ndarray:
     swapped = roi.copy()
     swapped[:, :, 2] = roi[:, :, 1]
     swapped[:, :, 1] = roi[:, :, 0]
+    swapped = cv2.convertScaleAbs(swapped, alpha=INFRARED_LIFT, beta=INFRARED_BRIGHT)
     swapped = cv2.LUT(swapped, _curve_lut(INFRARED_CONTRAST))
-    out = cv2.addWeighted(swapped, 0.78, _tint(_luma(roi), INFRARED_TINT), 0.30, 0.0)
+    # Area terang digeser ke merah muda. Pada foto infra merah asli, bagian
+    # yang memantulkan inframerah paling banyak justru yang paling terang dan
+    # berwarna paling aneh; itulah titik yang membuat efeknya terbaca.
+    bright = _luma(swapped)
+    bright = cv2.LUT(bright, _curve_lut(1.6, -60))
+    pink = _tint(bright, INFRARED_HIGHLIGHT)
+    out = cv2.addWeighted(swapped, 1.0, pink, INFRARED_HIGHLIGHT_MIX, 0.0)
+    out = cv2.addWeighted(out, 1.0, _tint(_luma(roi), INFRARED_TINT), 0.14, 0.0)
     return _polish(out, roi, vignette=0.34, grain=0.0)
 
 

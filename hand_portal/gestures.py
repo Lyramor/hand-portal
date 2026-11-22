@@ -13,6 +13,7 @@ from .config import Settings
 from .contracts import (
     INDEX_TIP,
     MIDDLE_MCP,
+    MIDDLE_TIP,
     PINKY_TIP,
     THUMB_TIP,
     WRIST,
@@ -47,17 +48,25 @@ INDEX_EXIT_RATIO = 0.50
 PINKY_ENTER_RATIO = 0.35
 PINKY_EXIT_RATIO = 0.55
 
+# Jempol ke ujung jari tengah. Dipakai sebagai gestur utama karena paling
+# gampang dilakukan tanpa harus menggeser tangan: cukup tekuk jari tengah
+# sampai menyentuh jempol.
+MIDDLE_ENTER_RATIO = 0.34
+MIDDLE_EXIT_RATIO = 0.54
+
 MAX_INDEX_GAP_FRAME_RATIO = 0.250
 MAX_PINKY_GAP_FRAME_RATIO = 0.250
+MAX_MIDDLE_GAP_FRAME_RATIO = 0.250
 
 # Urutan prioritas saat lebih dari satu gestur terbaca bersamaan. Telunjuk dua
 # tangan didahulukan karena hanya bisa terjadi kalau memang dua tangan sengaja
-# dirapatkan.
+# dirapatkan. Jari tengah ditaruh di atas kelingking karena lebih disengaja
+# dan lebih sering dipakai.
 #
 # Cubit jempol-telunjuk sengaja TIDAK ada di sini: gestur itu dipakai ketapel
 # (lihat slingshot.py), jadi kalau ikut mengganti filter, setiap tarikan
 # ketapel akan ikut melompatkan filter.
-GESTURE_PRIORITY = ("index", "pinky")
+GESTURE_PRIORITY = ("index", "middle", "pinky")
 
 # --- Penghalusan ---------------------------------------------------------
 # Alpha dasar diambil dari settings.smoothing, tapi kalau titik bergerak lebih
@@ -364,6 +373,7 @@ class FilterSwitcher:
         pinch_ratio = pinch_gap = None
         pinky_ratio = pinky_gap = None
         index_ratio = index_gap = None
+        middle_ratio = middle_gap = None
 
         if usable:
             hand = usable[0]
@@ -371,10 +381,13 @@ class FilterSwitcher:
             thumb = hand.point(THUMB_TIP, width, height)
             index = hand.point(INDEX_TIP, width, height)
             pinky = hand.point(PINKY_TIP, width, height)
+            middle = hand.point(MIDDLE_TIP, width, height)
             pinch_gap = _distance(thumb, index)
             pinky_gap = _distance(thumb, pinky)
+            middle_gap = _distance(thumb, middle)
             pinch_ratio = pinch_gap / span
             pinky_ratio = pinky_gap / span
+            middle_ratio = middle_gap / span
 
         if len(usable) >= 2:
             first, second = usable[0], usable[1]
@@ -388,6 +401,10 @@ class FilterSwitcher:
         self._set_active(
             "index", index_ratio, index_gap, INDEX_ENTER_RATIO, INDEX_EXIT_RATIO,
             MAX_INDEX_GAP_FRAME_RATIO * scale,
+        )
+        self._set_active(
+            "middle", middle_ratio, middle_gap, MIDDLE_ENTER_RATIO, MIDDLE_EXIT_RATIO,
+            MAX_MIDDLE_GAP_FRAME_RATIO * scale,
         )
         self._set_active(
             "pinky", pinky_ratio, pinky_gap, PINKY_ENTER_RATIO, PINKY_EXIT_RATIO,

@@ -52,14 +52,16 @@ def fake_hand(
     label: str,
     center: tuple[float, float],
     pinch: bool = False,
+    middle_to_thumb: bool = False,
 ) -> Hand:
     """Tangan palsu dengan geometri yang masuk akal.
 
     Pergelangan di bawah, pangkal jari tengah di atas, jadi lebar telapak
     (span) sekitar 0.18 tinggi frame. Ujung jempol dan telunjuk diletakkan
-    berdekatan kalau `pinch` True, atau terbuka lebar kalau False. Tanpa
-    bentuk yang benar, uji cubit akan gagal karena rasio jaraknya ngawur,
-    bukan karena kodenya salah.
+    berdekatan kalau `pinch` True, atau terbuka lebar kalau False. Ujung jari
+    tengah bisa didekatkan ke jempol lewat `middle_to_thumb` untuk menguji
+    gestur ganti filter. Tanpa bentuk yang benar, uji gestur akan gagal karena
+    rasio jaraknya ngawur, bukan karena kodenya salah.
     """
     cx, cy = center
     span = 0.18
@@ -72,6 +74,9 @@ def fake_hand(
     points[4] = (cx - gap / 2, cy)              # ujung jempol
     points[8] = (cx + gap / 2, cy)              # ujung telunjuk
     points[9] = middle_mcp
+    # Jari tengah: menempel ke jempol kalau gestur diminta, kalau tidak
+    # dibiarkan jauh supaya tidak memicu apa pun.
+    points[12] = (cx - gap / 2 + 0.004, cy) if middle_to_thumb else (cx + 0.06, cy)
     points[20] = (cx + gap / 2 + 0.02, cy + 0.05)  # ujung kelingking
     landmarks = tuple(Landmark(x=float(x), y=float(y)) for x, y in points)
     return Hand(label=label, landmarks=landmarks)
@@ -113,6 +118,17 @@ def main() -> int:
     before = switcher.index
     switcher.next()
     check("tombol ganti filter", switcher.index == (before + 1) % len(specs))
+
+    # Gestur jempol ke jari tengah, harus ditahan dulu sebelum berganti.
+    gesture_switcher = FilterSwitcher(len(specs), settings)
+    middle_hands = HandFrame(hands=(fake_hand("right", (0.5, 0.5), middle_to_thumb=True),), timestamp_ms=0)
+    early = gesture_switcher.update(middle_hands, WIDTH, HEIGHT, 0.0)
+    still_early = gesture_switcher.update(middle_hands, WIDTH, HEIGHT, 0.4)
+    locked = gesture_switcher.update(middle_hands, WIDTH, HEIGHT, 1.0)
+    check(
+        "gestur jempol ke jari tengah harus ditahan",
+        early is None and still_early is None and locked is not None and locked.reason == "middle",
+    )
 
     # -- render tiap filter di dalam portal --
     renderer = Renderer(settings, THEME)

@@ -6,9 +6,11 @@ Semua bagian lain dibuat agar bisa diuji tanpa perangkat keras.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -37,6 +39,7 @@ MAX_PERSON_COVERAGE = 0.95
 SWITCH_REASON_TEXT = {
     "pinch": "Filter diganti (cubit)",
     "index": "Filter diganti (telunjuk bertemu)",
+    "middle": "Filter diganti (jempol dan jari tengah)",
     "pinky": "Filter diganti (jempol dan kelingking)",
     "auto": "Filter berganti otomatis",
     "key": "Filter diganti",
@@ -105,6 +108,49 @@ def open_camera(settings: Settings) -> cv2.VideoCapture:
     return capture
 
 
+LOCK_PATH = Path("/tmp/hand-portal.lock")
+
+
+def _acquire_single_instance() -> int | None:
+    """Cegah dua jendela Hand Portal terbuka bersamaan.
+
+    Ini bukan sekadar soal rapi. Kamera bawaan macOS hanya bisa dipakai satu
+    proses. Kalau instance kedua tetap dibuka, permintaan ke kamera laptop
+    gagal karena sedang dipakai, dan macOS diam-diam memberi kamera iPhone
+    (Continuity Camera) sebagai gantinya. Itu yang membuat aplikasi tiba-tiba
+    memakai kamera HP.
+
+    Mengembalikan file descriptor pengunci, atau None kalau sudah ada instance
+    lain yang berjalan.
+    """
+    handle = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        import fcntl
+
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (ImportError, OSError):
+        # Di sistem tanpa fcntl, penguncian dilewati. Lebih baik tetap jalan
+        # daripada menolak membuka aplikasi.
+        os.close(handle)
+        return None if _lock_owner_alive() else -1
+    os.ftruncate(handle, 0)
+    os.write(handle, str(os.getpid()).encode())
+    return handle
+
+
+def _lock_owner_alive() -> bool:
+    """True kalau pemilik berkas kunci masih hidup."""
+    try:
+        pid = int(LOCK_PATH.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def _usable_person_mask(mask: np.ndarray | None) -> np.ndarray | None:
     """Tolak mask yang sebenarnya tidak berguna.
 
@@ -150,13 +196,39 @@ class App:
         self.auto_cycle = settings.auto_cycle_s > 0
         self._auto_next_s = 0.0
         self._last_frame_s = 0.0
+        # Pesan yang ditampilkan sekali di frame pertama.
+        self._pending_toast: str | None = None
 
     # -- siklus hidup ---------------------------------------------------
 
     def run(self) -> int:
+        lock = _acquire_single_instance()
+        if lock is None:
+            raise RuntimeError(
+                "Hand Portal sudah berjalan di jendela lain. "
+                "Tutup jendela yang lama dulu, karena kamera laptop hanya bisa "
+                "dipakai satu aplikasi. Kalau tidak ada jendela yang terlihat, "
+                f"hapus {LOCK_PATH} lalu coba lagi."
+            )
+        try:
+            return self._run_loop()
+        finally:
+            if lock not in (None, -1):
+                os.close(lock)
+
+    def _run_loop(self) -> int:
         self.capture = open_camera(self.settings)
         self.grabber = _FrameGrabber(self.capture)
-        print("Hand Portal siap. Tekan Q di jendela kamera untuk keluar.", flush=True)
+        name = cameras.describe(self.settings.camera_index)
+        print(
+            f"Kamera {self.settings.camera_index}: {name}. "
+            "Tekan Q di jendela kamera untuk keluar.",
+            flush=True,
+        )
+        # Nama kamera ditampilkan sekilas di layar, jadi kalau ternyata yang
+        # terpakai bukan kamera yang dimaksud, itu langsung kelihatan tanpa
+        # harus membuka log.
+        self._pending_toast = f"Kamera: {name}"
         try:
             while True:
                 if not self._step():
@@ -221,7 +293,14 @@ class App:
 
         # Ketapel digambar setelah portal supaya bola dan pecahannya berada di
         # atas semua efek, lalu bloom membuat semuanya ikut bercahaya.
-        draw_slingshot(frame, self.slingshot.state(width, height), self.projectiles, self.theme, now_s)
+        draw_slingshot(
+            frame,
+            self.slingshot.state(width, height),
+            self.projectiles,
+            self.theme,
+            now_s,
+            bands=self.settings.slingshot_bands,
+        )
 
         if self.settings.bloom:
             frame = self.renderer.bloom(frame)
@@ -239,6 +318,9 @@ class App:
         )
         if self.show_hud:
             self.hud.draw(frame, stats, now_s)
+        if self._pending_toast is not None:
+            self.hud.toast(self._pending_toast, now_s)
+            self._pending_toast = None
 
         if self.recording:
             self.recorder.write(frame)

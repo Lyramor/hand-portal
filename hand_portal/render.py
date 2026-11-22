@@ -316,7 +316,12 @@ class Renderer:
         di batas potongan, sehingga tepi lurus portal tidak punya gradasi
         sama sekali dan terlihat sebagai garis keras.
         """
-        kernel = _odd(min(EDGE_KERNEL_MAX, round(EDGE_SOFTNESS_PX * self._scale(height) * 2.0) + 1))
+        kernel = _odd(
+            min(
+                EDGE_KERNEL_MAX,
+                round(EDGE_SOFTNESS_PX * self._settings.edge_softness_scale * self._scale(height) * 2.0) + 1,
+            )
+        )
         pad = min(EDGE_PAD_MAX, kernel)
         left = max(0, x - pad)
         top = max(0, y - pad)
@@ -435,7 +440,9 @@ class Renderer:
         fx, fy = factor
         ox, oy = origin
         shrink = min(fx, fy)
-        thickness = max(1, int(round(PORTAL_LINE_PX * scale * pen * shrink)))
+        thickness = max(
+            1, int(round(PORTAL_LINE_PX * self._settings.portal_line_scale * scale * pen * shrink))
+        )
         dot = max(1, int(round(PARTICLE_RADIUS_PX * scale * pen * shrink)))
         accent = self._theme.accent
         soft = self._theme.accent_soft
@@ -507,7 +514,7 @@ class Renderer:
         scale: float,
     ) -> None:
         """Titik terang di tiap sudut quad, tempat ujung jari menyentuh portal."""
-        corner = max(2, int(round(CORNER_RADIUS_PX * scale)))
+        corner = max(2, int(round(CORNER_RADIUS_PX * self._settings.portal_line_scale * scale)))
         for point in quad:
             spot = place(point)
             cv2.circle(canvas, spot, max(corner, int(corner * 1.6)), self._theme.accent_soft, -1, cv2.LINE_AA)

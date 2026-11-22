@@ -66,13 +66,20 @@ class Settings:
     hold_to_lock_s: float = 0.8
 
     # Filter berganti sendiri setiap sekian detik. 0 berarti mati.
-    auto_cycle_s: float = 9.0
+    auto_cycle_s: float = 5.0
 
     # Ketapel: tarik cubitan lalu lepas untuk meluncurkan peluru.
     slingshot_min_pull: float = 0.045      # jarak tarik minimum, relatif lebar frame
     slingshot_max_pull: float = 0.30       # tarikan penuh, menentukan kekuatan
     slingshot_charge_s: float = 0.10       # waktu tarik sebelum dianggap siap
     slingshot_cooldown_s: float = 0.35
+    # Garis karet ketapel dimatikan secara bawaan. Yang terlihat hanya bola
+    # yang ditarik dan pelurunya, jadi layar tidak penuh garis.
+    slingshot_bands: bool = False
+
+    # Ketebalan garis, dikalikan skala tinggi frame.
+    portal_line_scale: float = 0.2
+    edge_softness_scale: float = 0.2
 
     particles: bool = True
     bloom: bool = True
