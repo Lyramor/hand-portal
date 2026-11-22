@@ -48,15 +48,16 @@ INDEX_EXIT_RATIO = 0.50
 PINKY_ENTER_RATIO = 0.35
 PINKY_EXIT_RATIO = 0.55
 
-# Jempol ke ujung jari tengah. Dipakai sebagai gestur utama karena paling
-# gampang dilakukan tanpa harus menggeser tangan: cukup tekuk jari tengah
-# sampai menyentuh jempol.
-MIDDLE_ENTER_RATIO = 0.34
-MIDDLE_EXIT_RATIO = 0.54
+# Jempol ke ujung jari tengah. Ambangnya dibuat longgar karena ujung jari
+# yang menyentuh tetap punya jarak beberapa piksel di citra kamera, dan tangan
+# yang sedikit miring membuat jarak itu membesar. Yang penting gesturnya
+# mudah dilakukan, bukan angkanya ketat.
+MIDDLE_ENTER_RATIO = 0.46
+MIDDLE_EXIT_RATIO = 0.64
 
 MAX_INDEX_GAP_FRAME_RATIO = 0.250
-MAX_PINKY_GAP_FRAME_RATIO = 0.250
-MAX_MIDDLE_GAP_FRAME_RATIO = 0.250
+MAX_PINKY_GAP_FRAME_RATIO = 0.300
+MAX_MIDDLE_GAP_FRAME_RATIO = 0.300
 
 # Urutan prioritas saat lebih dari satu gestur terbaca bersamaan. Telunjuk dua
 # tangan didahulukan karena hanya bisa terjadi kalau memang dua tangan sengaja
@@ -317,6 +318,18 @@ class FilterSwitcher:
         """Indeks filter yang sedang aktif."""
         return self._index
 
+    def hold_progress(self, now_s: float) -> float:
+        """Seberapa jauh gestur sudah ditahan, 0..1.
+
+        Dipakai HUD untuk menunjukkan bahwa gesturnya sedang terbaca. Tanpa
+        umpan balik ini, pemakai tidak tahu apakah gesturnya belum terbaca
+        atau sudah terbaca tapi belum cukup lama.
+        """
+        if self._hold_since is None or self._settings.hold_to_lock_s <= 0:
+            return 0.0
+        elapsed = now_s - self._hold_since
+        return max(0.0, min(1.0, elapsed / self._settings.hold_to_lock_s))
+
     def update(
         self, hands: HandFrame, width: int, height: int, now_s: float
     ) -> SwitchEvent | None:
@@ -375,19 +388,31 @@ class FilterSwitcher:
         index_ratio = index_gap = None
         middle_ratio = middle_gap = None
 
-        if usable:
-            hand = usable[0]
-            span = _span_px(hand, width, height)
+        # Gestur dicari di SEMUA tangan, bukan hanya tangan pertama. Kalau
+        # hanya tangan pertama yang diperiksa, gestur yang dibuat dengan tangan
+        # kanan tidak pernah terbaca saat MediaPipe kebetulan melaporkan tangan
+        # kiri lebih dulu. Yang dipakai adalah jarak terkecil, karena tangan
+        # yang benar-benar melakukan gestur selalu yang jarinya paling rapat.
+        for hand in usable:
+            span = max(_span_px(hand, width, height), 1.0)
             thumb = hand.point(THUMB_TIP, width, height)
             index = hand.point(INDEX_TIP, width, height)
             pinky = hand.point(PINKY_TIP, width, height)
             middle = hand.point(MIDDLE_TIP, width, height)
-            pinch_gap = _distance(thumb, index)
-            pinky_gap = _distance(thumb, pinky)
-            middle_gap = _distance(thumb, middle)
-            pinch_ratio = pinch_gap / span
-            pinky_ratio = pinky_gap / span
-            middle_ratio = middle_gap / span
+
+            candidate_pinch = _distance(thumb, index)
+            candidate_pinky = _distance(thumb, pinky)
+            candidate_middle = _distance(thumb, middle)
+
+            if pinch_gap is None or candidate_pinch < pinch_gap:
+                pinch_gap = candidate_pinch
+                pinch_ratio = candidate_pinch / span
+            if pinky_gap is None or candidate_pinky < pinky_gap:
+                pinky_gap = candidate_pinky
+                pinky_ratio = candidate_pinky / span
+            if middle_gap is None or candidate_middle < middle_gap:
+                middle_gap = candidate_middle
+                middle_ratio = candidate_middle / span
 
         if len(usable) >= 2:
             first, second = usable[0], usable[1]

@@ -120,11 +120,14 @@ def main() -> int:
     check("tombol ganti filter", switcher.index == (before + 1) % len(specs))
 
     # Gestur jempol ke jari tengah, harus ditahan dulu sebelum berganti.
+    # Waktu tahan diambil dari setelan supaya uji ini tetap benar kalau
+    # nilainya diubah.
     gesture_switcher = FilterSwitcher(len(specs), settings)
     middle_hands = HandFrame(hands=(fake_hand("right", (0.5, 0.5), middle_to_thumb=True),), timestamp_ms=0)
+    hold = settings.hold_to_lock_s
     early = gesture_switcher.update(middle_hands, WIDTH, HEIGHT, 0.0)
-    still_early = gesture_switcher.update(middle_hands, WIDTH, HEIGHT, 0.4)
-    locked = gesture_switcher.update(middle_hands, WIDTH, HEIGHT, 1.0)
+    still_early = gesture_switcher.update(middle_hands, WIDTH, HEIGHT, hold * 0.5)
+    locked = gesture_switcher.update(middle_hands, WIDTH, HEIGHT, hold + 0.05)
     check(
         "gestur jempol ke jari tengah harus ditahan",
         early is None and still_early is None and locked is not None and locked.reason == "middle",

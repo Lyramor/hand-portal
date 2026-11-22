@@ -38,13 +38,11 @@ MAX_BURSTS = 10
 # Pecahan saat peluru buyar.
 BURST_PARTICLES = 34
 BURST_LIFE_S = 0.62
-BURST_RING_LIFE_S = 0.34
 
 # Bentuk visual ketapel, semuanya dalam piksel acuan 720p lalu diskalakan.
 PRONG_SPREAD_PX = 17.0
 BAND_WIDTH_PX = 3.0
 ORB_RADIUS_PX = 9.0
-CHARGE_RING_RADIUS_PX = 22.0
 TRAIL_LENGTH = 9
 # Peluru dibiarkan lebih cepat daripada jatuh gravitasi, jadi lintasannya
 # lurus dan cepat seperti tembakan, bukan melengkung seperti lemparan.
@@ -374,37 +372,24 @@ def draw_slingshot(
         anchor = (int(round(state.anchor[0])), int(round(state.anchor[1])))
 
         if bands:
-            _draw_band(frame, anchor, state.pull, scale, theme.accent_soft)
+            _draw_band(frame, anchor, state.pull, scale, theme.orb_edge)
 
         # Bola yang sedang ditarik membesar mengikuti kekuatan, jadi pemakai
-        # bisa melihat kapan tarikannya sudah penuh.
+        # bisa melihat kapan tarikannya sudah penuh. Tidak ada cincin di
+        # sekelilingnya: lingkaran itu hanya menambah ramai tanpa memberi
+        # informasi yang tidak sudah terbaca dari besar bolanya.
         radius = max(3, int(round((ORB_RADIUS_PX + 7.0 * state.power) * scale)))
-        glow = max(radius + 2, int(round(radius * 2.1)))
-        cv2.circle(frame, pull, glow, theme.accent_soft, max(1, int(round(2 * scale))), cv2.LINE_AA)
-        cv2.circle(frame, pull, radius, theme.accent, -1, cv2.LINE_AA)
-        cv2.circle(frame, pull, max(1, radius // 2), (255, 255, 255), -1, cv2.LINE_AA)
-
-        # Cincin pengisian: penuh berarti tarikan sudah maksimal.
-        if state.power > 0.02:
-            ring_radius = int(round(CHARGE_RING_RADIUS_PX * scale))
-            cv2.ellipse(
-                frame,
-                pull,
-                (ring_radius, ring_radius),
-                0,
-                -90,
-                -90 + int(360 * state.power),
-                theme.accent,
-                max(1, int(round(2 * scale))),
-                cv2.LINE_AA,
-            )
+        cv2.circle(frame, pull, radius, theme.orb_fill, -1, cv2.LINE_AA)
+        cv2.circle(frame, pull, radius, theme.orb_edge, max(1, int(round(scale))), cv2.LINE_AA)
 
     for item in projectiles._items:  # noqa: SLF001 - satu modul, sengaja langsung
         points = item.trail
         for index, point in enumerate(points):
             ratio = (index + 1) / len(points)
             radius = max(1, int(round((2.0 + 5.0 * ratio * item.power) * scale)))
-            color = tuple(int(c * (0.25 + 0.75 * ratio)) for c in theme.accent)
+            # Jejak makin pudar ke belakang, tapi tetap gelap supaya senada
+            # dengan bolanya.
+            color = tuple(int(c * (0.30 + 0.70 * ratio)) for c in theme.orb_fill)
             cv2.circle(
                 frame,
                 (int(round(point[0])), int(round(point[1]))),
@@ -415,9 +400,8 @@ def draw_slingshot(
             )
         head = (int(round(item.position[0])), int(round(item.position[1])))
         core = max(2, int(round((ORB_RADIUS_PX * 0.8) * scale)))
-        cv2.circle(frame, head, core + 3, theme.accent_soft, -1, cv2.LINE_AA)
-        cv2.circle(frame, head, core, theme.accent, -1, cv2.LINE_AA)
-        cv2.circle(frame, head, max(1, core // 2), (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(frame, head, core, theme.orb_fill, -1, cv2.LINE_AA)
+        cv2.circle(frame, head, core, theme.orb_edge, max(1, int(round(scale))), cv2.LINE_AA)
 
     for burst in projectiles._bursts:  # noqa: SLF001
         progress = min(1.0, burst.age / BURST_LIFE_S)
@@ -434,25 +418,6 @@ def draw_slingshot(
             px = int(round(cx + math.cos(angle) * distance))
             py = int(round(cy + math.sin(angle) * distance))
             radius = max(1, int(round((4.0 * fade + 1.0) * scale)))
-            if index % 3 == 0:
-                color = theme.accent
-            elif index % 3 == 1:
-                color = theme.text
-            else:
-                color = theme.accent_soft
+            color = theme.orb_fill if index % 3 else theme.orb_edge
             color = tuple(int(c * fade) for c in color)
             cv2.circle(frame, (px, py), radius, color, -1, cv2.LINE_AA)
-
-        if burst.age < BURST_RING_LIFE_S:
-            ring_progress = burst.age / BURST_RING_LIFE_S
-            ring_radius = int(round(travel * 1.15 + 6 * scale))
-            ring_fade = 1.0 - ring_progress
-            ring_color = tuple(int(c * ring_fade) for c in theme.accent)
-            cv2.circle(
-                frame,
-                (int(round(cx)), int(round(cy))),
-                max(2, ring_radius),
-                ring_color,
-                max(1, int(round(2 * scale))),
-                cv2.LINE_AA,
-            )

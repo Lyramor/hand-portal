@@ -191,3 +191,6 @@ class FrameStats:
     filter_index: int = 0
     filter_total: int = 0
     tracking: bool = False
+    # Seberapa jauh gestur ganti filter sudah ditahan, 0..1. Nol berarti
+    # tidak ada gestur yang sedang ditahan.
+    hold_progress: float = 0.0

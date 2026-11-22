@@ -36,29 +36,20 @@ BODY_FONT = cv2.FONT_HERSHEY_SIMPLEX
 TITLE_SCALE = 0.62
 BODY_SCALE = 0.46
 SMALL_SCALE = 0.40
-CAROUSEL_SCALE = 0.40
 TOAST_SCALE = 0.52
 
 MARGIN_RATIO = 0.030
 PAD_RATIO = 0.016
 GAP_RATIO = 0.010
 CORNER_RATIO = 0.012
-ITEM_GAP_RATIO = 0.012
-ITEM_PAD_RATIO = 0.010
 
 # Panel dibuat tembus pandang: kalau terlalu pekat, video di belakangnya
 # hilang dan HUD terasa seperti menu, bukan lapisan di atas kamera.
 PANEL_ALPHA = 0.55
-STRIP_ALPHA = 0.45
-ACTIVE_FILL_ALPHA = 0.20
 TOAST_ALPHA = 0.62
 
 TOAST_LIFETIME_S = 1.6
 TOAST_FADE_S = 0.5
-
-# Korsel tidak mengecilkan semua nama sekaligus. Kalau filter banyak, yang
-# ditampilkan hanya jendela di sekitar filter aktif.
-MAX_CAROUSEL_ITEMS = 7
 
 HINT_TEXT = "Cubit lalu tarik untuk ketapel - Tahan jempol ke jari tengah untuk ganti efek - [ ] pilih - C kamera - Q keluar"
 
@@ -271,7 +262,10 @@ class Hud:
         metrics = self._metrics(width, height)
         panel_bottom = self._draw_panel(frame, stats, metrics)
         hint_height = self._hint_height(metrics)
-        self._draw_carousel(frame, stats, metrics, panel_bottom, hint_height)
+        # Korsel nama filter dan batang kemajuan gestur sengaja tidak
+        # digambar. Keduanya menutupi bagian bawah layar, dan nama filter
+        # sudah terbaca di panel kiri atas.
+        del panel_bottom
         self._draw_hint(frame, metrics)
         self._draw_toast(frame, now_s, metrics)
 
@@ -375,124 +369,6 @@ class Hud:
 
     # --------------------------------------------------------------- korsel
 
-    def _carousel_labels(self, stats: FrameStats) -> list[str]:
-        """Daftar nama filter untuk korsel, disamakan panjangnya dengan total."""
-        if not self._labels and not self._labels_loaded:
-            self._labels = _load_filter_labels()
-            self._labels_loaded = True
-
-        total = stats.filter_total
-        labels = list(self._labels)
-        if total <= 0:
-            total = len(labels)
-        if total <= 0 and stats.filter_label:
-            total = 1
-        if total <= 0:
-            return []
-
-        if len(labels) < total:
-            # Tanpa daftar nama, nomor urut tetap memberi petunjuk posisi.
-            labels.extend(str(i + 1) for i in range(len(labels), total))
-        elif len(labels) > total:
-            labels = labels[:total]
-
-        active = stats.filter_index % total
-        if stats.filter_label and (not labels[active] or labels[active].isdigit()):
-            labels[active] = stats.filter_label
-        return labels
-
-    def _draw_carousel(
-        self,
-        frame: np.ndarray,
-        stats: FrameStats,
-        m: _Metrics,
-        panel_bottom: int,
-        hint_height: int,
-    ) -> None:
-        """Gambar deretan nama filter dengan jendela bergeser di sekitar yang aktif."""
-        labels = self._carousel_labels(stats)
-        total = len(labels)
-        if total == 0:
-            return
-
-        theme = self._theme
-        font = BODY_FONT
-        scale = CAROUSEL_SCALE * m.scale
-        thickness = 1
-        item_gap = max(2, int(round(m.height * ITEM_GAP_RATIO)))
-        item_pad = max(3, int(round(m.height * ITEM_PAD_RATIO)))
-        active = stats.filter_index % total
-
-        available = m.width - 2 * m.margin - 2 * m.pad
-        if available <= 0:
-            return
-
-        count = min(MAX_CAROUSEL_ITEMS, total)
-        start = max(0, min(active - count // 2, total - count))
-        indices = list(range(start, start + count))
-        widths = [_text_width(labels[i], font, scale, thickness) for i in indices]
-
-        # Kalau barisnya tidak muat, buang ujung yang paling jauh dari filter
-        # aktif. Huruf tidak dikecilkan supaya nama filter tetap terbaca.
-        while len(indices) > 1:
-            row_width = sum(widths) + item_gap * (len(indices) - 1) + 2 * item_pad
-            if row_width <= available:
-                break
-            if active - indices[0] >= indices[-1] - active:
-                indices.pop(0)
-            else:
-                indices.pop()
-            widths = [_text_width(labels[i], font, scale, thickness) for i in indices]
-
-        if len(indices) == 1 and widths[0] + 2 * item_pad > available:
-            labels = list(labels)
-            labels[indices[0]] = _shorten_to_width(
-                labels[indices[0]], available - 2 * item_pad, font, scale, thickness
-            )
-            widths = [_text_width(labels[i], font, scale, thickness) for i in indices]
-
-        row_width = sum(widths) + item_gap * (len(indices) - 1)
-        strip_width = row_width + 2 * m.pad
-        text_height = max(_text_metrics(labels[i], font, scale, thickness)[1] for i in indices)
-        strip_height = text_height + 2 * m.pad
-
-        gap_above_hint = m.gap if hint_height > 0 else 0
-        bottom = m.height - m.margin - hint_height - gap_above_hint
-        top = bottom - strip_height
-        if top <= panel_bottom + m.gap or top < m.margin:
-            # Tidak ada ruang tersisa antara panel dan petunjuk bawah.
-            return
-
-        x0 = (m.width - strip_width) // 2
-        x1 = x0 + strip_width
-        _soft_panel(frame, x0, top, x1, bottom, theme.panel, STRIP_ALPHA, m.radius)
-
-        inset = max(2, m.pad // 2)
-        baseline_y = top + (strip_height + text_height) // 2
-        cursor = x0 + m.pad
-        for index, item_width in zip(indices, widths):
-            is_active = index == active
-            if is_active:
-                box_x0 = cursor - item_pad
-                box_x1 = cursor + item_width + item_pad
-                box_y0 = top + inset
-                box_y1 = bottom - inset
-                _soft_panel(frame, box_x0, box_y0, box_x1, box_y1, theme.accent, ACTIVE_FILL_ALPHA, m.radius)
-                cv2.rectangle(frame, (box_x0, box_y0), (box_x1, box_y1), theme.accent, 1, cv2.LINE_AA)
-            color = theme.text if is_active else theme.text_dim
-            _put_text_shadowed(
-                frame,
-                labels[index],
-                (cursor, baseline_y),
-                font,
-                scale,
-                color,
-                thickness,
-                theme.panel,
-            )
-            cursor += item_width + item_gap
-
-    # --------------------------------------------------------------- petunjuk
 
     def _hint_height(self, m: _Metrics) -> int:
         """Tinggi teks petunjuk, atau 0 kalau tidak muat di frame ini."""

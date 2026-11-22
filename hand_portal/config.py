@@ -32,6 +32,13 @@ class Theme:
 
     accent: Color = (250, 210, 30)
     accent_soft: Color = (140, 120, 20)
+    # Warna garis tepi portal. Sengaja hampir hitam: garis berwarna terang
+    # menarik perhatian ke tepinya, padahal yang ingin dilihat isi portalnya.
+    portal_line: Color = (18, 18, 18)
+    # Bola ketapel dan pecahannya. Hitam dengan tepi lebih gelap supaya
+    # bentuknya tetap terbaca di atas latar apa pun.
+    orb_fill: Color = (24, 24, 24)
+    orb_edge: Color = (0, 0, 0)
     text: Color = (245, 245, 245)
     text_dim: Color = (160, 160, 160)
     panel: Color = (18, 18, 18)
@@ -63,7 +70,10 @@ class Settings:
     min_portal_area: float = 0.015
 
     switch_cooldown_s: float = 0.45
-    hold_to_lock_s: float = 0.8
+    # Cukup untuk membedakan gestur yang disengaja dari tangan yang sekadar
+    # lewat, tapi tetap terasa langsung. Lebih lama dari ini terasa seperti
+    # gesturnya tidak berfungsi.
+    hold_to_lock_s: float = 0.30
 
     # Filter berganti sendiri setiap sekian detik. 0 berarti mati.
     auto_cycle_s: float = 5.0
@@ -78,8 +88,13 @@ class Settings:
     slingshot_bands: bool = False
 
     # Ketebalan garis, dikalikan skala tinggi frame.
-    portal_line_scale: float = 0.2
-    edge_softness_scale: float = 0.2
+    portal_line_scale: float = 0.35
+    edge_softness_scale: float = 0.5
+
+    # Hiasan tepi portal: cincin berdenyut, partikel yang mengalir, dan glow.
+    # Bawaannya mati. Yang tersisa hanya garis tipis biasa, karena hiasan itu
+    # membuat tepi terasa ramai dan mengalihkan perhatian dari gambarnya.
+    portal_effects: bool = False
 
     particles: bool = True
     bloom: bool = True

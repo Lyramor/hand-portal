@@ -44,8 +44,6 @@ BONE_WIDTH_PX = 2.0
 BONE_OUTLINE_PX = 2.0
 JOINT_RADIUS_PX = 3.0
 TIP_RADIUS_PX = 7.0
-TIP_HALO_FACTOR = 1.9
-TIP_CORE_FACTOR = 0.42
 MIN_SKELETON_SIDE = 8
 
 # Tepi portal diblur sedikit supaya batas filter tidak bergerigi. Kalau terlalu
@@ -248,13 +246,11 @@ class Renderer:
                 cv2.circle(frame, point, joint_radius, joint_color, -1, cv2.LINE_AA)
 
             # Ujung jempol dan telunjuk dibesarkan dan diberi warna aksen
-            # karena dua titik itulah yang membentuk sudut portal.
-            halo_radius = max(tip_radius, int(round(tip_radius * TIP_HALO_FACTOR)))
-            core_radius = max(1, int(round(tip_radius * TIP_CORE_FACTOR)))
+            # karena dua titik itulah yang membentuk sudut portal. Tidak ada
+            # lingkaran halo di luarnya: lingkaran itu terlihat seperti cincin
+            # mengambang dan menutupi gambar di sekitarnya.
             for tip in (THUMB_TIP, INDEX_TIP):
-                cv2.circle(frame, points[tip], halo_radius, self._theme.accent_soft, -1, cv2.LINE_AA)
                 cv2.circle(frame, points[tip], tip_radius, self._theme.accent, -1, cv2.LINE_AA)
-                cv2.circle(frame, points[tip], core_radius, self._theme.text, -1, cv2.LINE_AA)
 
     # ------------------------------------------------------------------
     # Tempelan filter
@@ -362,7 +358,12 @@ class Renderer:
     # ------------------------------------------------------------------
 
     def draw_portal(self, frame: np.ndarray, portal: Portal, now_s: float) -> None:
-        """Gambar tepi portal, sudut menyala, cincin berdenyut, dan partikel."""
+        """Gambar tepi portal.
+
+        Bawaannya hanya garis tipis tanpa hiasan. Cincin berdenyut, partikel,
+        sudut menyala, dan glow hanya digambar kalau settings.portal_effects
+        dinyalakan, karena hiasan itu membuat tepi terasa ramai.
+        """
         if not self._is_frame(frame):
             return
         if not portal.valid or not portal.points:
@@ -386,6 +387,14 @@ class Renderer:
             if len(quad) < 3:
                 return
 
+        effects = self._settings.portal_effects
+        if not effects:
+            self._stroke_portal(
+                frame, quad, center, radius, (0, 0), (1.0, 1.0), scale, 1.0, now_s,
+                corners=False, particles=False, ring=False,
+            )
+            return
+
         pad = int(round(GLOW_PAD_PX * scale)) + 2
         x0, y0, x1, y1 = self._glow_box(portal, width, height, pad)
         if x1 - x0 < 2 or y1 - y0 < 2:
@@ -401,7 +410,7 @@ class Renderer:
         layer = np.zeros((glow_h, glow_w, 3), np.uint8)
         self._stroke_portal(
             layer, quad, center, radius, (x0, y0), factor, scale, GLOW_PEN, now_s,
-            corners=True, particles=False,
+            corners=True, particles=False, ring=True,
         )
         kernel = _odd(GLOW_KERNEL_PX * scale * min(factor))
         layer = cv2.GaussianBlur(layer, (kernel, kernel), 0)
@@ -410,7 +419,7 @@ class Renderer:
 
         self._stroke_portal(
             frame, quad, center, radius, (0, 0), (1.0, 1.0), scale, 1.0, now_s,
-            corners=True, particles=True,
+            corners=True, particles=True, ring=True,
         )
 
     def _stroke_portal(
@@ -426,6 +435,7 @@ class Renderer:
         now_s: float,
         corners: bool,
         particles: bool,
+        ring: bool = True,
     ) -> None:
         """Gambar seluruh isi portal ke satu kanvas dengan skala tertentu.
 
@@ -446,7 +456,10 @@ class Renderer:
         dot = max(1, int(round(PARTICLE_RADIUS_PX * scale * pen * shrink)))
         accent = self._theme.accent
         soft = self._theme.accent_soft
-        edge = _mix(accent, soft, EDGE_LINE_MIX) if particles else accent
+        # Garis tepi memakai warna sendiri yang gelap. Warna aksen tetap
+        # dipakai untuk titik ujung jari dan partikel, tapi tepi portal
+        # dibiarkan tenang supaya isinya yang menonjol.
+        edge = self._theme.portal_line
 
         def place(point: tuple[float, float]) -> tuple[int, int]:
             return (int(round((point[0] - ox) * fx)), int(round((point[1] - oy) * fy)))
@@ -465,7 +478,8 @@ class Renderer:
             # bentuk quad yang tidak simetris tetap terlihat sama.
             ring_grow = self._offset(scale, pulse, reach, RING_MAX_FRACTION, RING_OFFSET_PX, RING_PULSE_PX)
             outer = _offset_polygon(quad, ring_grow)
-            cv2.polylines(canvas, [np.array([place(point) for point in outer], np.int32)], True, soft, max(1, thickness // 2), cv2.LINE_AA)
+            if ring:
+                cv2.polylines(canvas, [np.array([place(point) for point in outer], np.int32)], True, soft, max(1, thickness // 2), cv2.LINE_AA)
             cv2.polylines(canvas, [polygon], True, edge, thickness, cv2.LINE_AA)
             if corners:
                 self._draw_corners(canvas, quad, place, scale)
@@ -480,7 +494,8 @@ class Renderer:
         else:
             ring_grow = self._offset(scale, pulse, radius, RING_MAX_FRACTION, RING_OFFSET_PX, RING_PULSE_PX)
             ring_radius = radius + ring_grow
-            cv2.circle(canvas, place(center), max(1, int(round(ring_radius * shrink))), soft, max(1, thickness // 2), cv2.LINE_AA)
+            if ring:
+                cv2.circle(canvas, place(center), max(1, int(round(ring_radius * shrink))), soft, max(1, thickness // 2), cv2.LINE_AA)
             cv2.circle(canvas, place(center), max(1, int(round(radius * shrink))), edge, thickness, cv2.LINE_AA)
             if corners:
                 tick = max(2.0, CORNER_RADIUS_PX * scale * shrink)

@@ -381,6 +381,7 @@ class App:
             filter_index=self.switcher.index,
             filter_total=len(self.filters),
             tracking=portal is not None,
+            hold_progress=self.switcher.hold_progress(now_s),
         )
         if self.show_hud:
             self.hud.draw(frame, stats, now_s)
